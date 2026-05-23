@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+*.avi
+*.mp4
+*.mov
+*.mkv
+
+rotation_compare.png
+rotation_candidates.png
+rotation_output_compare.png
+post1s_rotation_candidates.png
+compare_same_frame.png
+cleaned_from_1s_preview.png
+sample_*.png
