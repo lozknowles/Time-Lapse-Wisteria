@@ -38,13 +38,13 @@ DEFAULT_YOLO_MODEL = "yolov8n.pt"
 DEFAULT_OVERLAY_TIMESTAMP = True
 DEFAULT_TIMESTAMP_FONT_SIZE = 28
 DEFAULT_TIMESTAMP_MARGIN = 16
-DEFAULT_TIMESTAMP_BOX_ALPHA = 170
+DEFAULT_TIMESTAMP_BOX_ALPHA = 120
 DEFAULT_TIMESTAMP_OCR_TOP_FRAC = 0.88
 DEFAULT_TIMESTAMP_OCR_LEFT_FRAC = 0.75
-DEFAULT_TIMESTAMP_PANEL_PADDING_X = 24
-DEFAULT_TIMESTAMP_PANEL_PADDING_Y = 20
-DEFAULT_TIMESTAMP_PANEL_WIDTH_FRAC = 0.42
-DEFAULT_TIMESTAMP_PANEL_HEIGHT_FRAC = 0.26
+DEFAULT_TIMESTAMP_PANEL_PADDING_X = 18
+DEFAULT_TIMESTAMP_PANEL_PADDING_Y = 14
+DEFAULT_TIMESTAMP_PANEL_WIDTH_FRAC = 0.28
+DEFAULT_TIMESTAMP_PANEL_HEIGHT_FRAC = 0.17
 
 COCO_PERSON = [0]
 COCO_VEHICLES = [1, 2, 3, 5, 7]
@@ -395,9 +395,7 @@ def parse_timestamp_fields(
     else:
         period = "NIGHT"
 
-    ampm = "A.M." if hour < 12 else "P.M."
-    hour_12 = hour % 12 or 12
-    time_12h = f"{hour_12}:{dt.strftime('%M')}"
+    time_24h = dt.strftime("%H:%M")
 
     temp_label = temp_text or ""
     if temp_label:
@@ -410,8 +408,7 @@ def parse_timestamp_fields(
     return {
         "weekday": dt.strftime("%A").upper(),
         "period": period,
-        "time_12h": time_12h,
-        "ampm": ampm,
+        "time_24h": time_24h,
         "day": dt.strftime("%d").lstrip("0") or "0",
         "month": dt.strftime("%B").upper(),
         "year": dt.strftime("%Y"),
@@ -573,8 +570,8 @@ def overlay_timestamp(
 
     panel_w = min(int(image.size[0] * DEFAULT_TIMESTAMP_PANEL_WIDTH_FRAC), image.size[0] - margin * 2)
     panel_h = min(int(image.size[1] * DEFAULT_TIMESTAMP_PANEL_HEIGHT_FRAC), image.size[1] - margin * 2)
-    panel_w = max(520, panel_w)
-    panel_h = max(210, panel_h)
+    panel_w = max(360, panel_w)
+    panel_h = max(180, panel_h)
     x0 = margin
     y0 = image.size[1] - margin - panel_h
     x1 = x0 + panel_w
@@ -606,20 +603,20 @@ def overlay_timestamp(
     bottom_font = find_ui_font(max(16, font_size - 4))
     small_font = find_ui_font(max(14, font_size - 6))
 
-    panel_draw.text((panel_w // 2, 18), meta["weekday"], font=weekday_font, fill=(245, 245, 245, 255), anchor="ma")
-    panel_draw.text((panel_w // 2, 56), meta["period"], font=period_font, fill=(245, 245, 245, 255), anchor="ma")
+    panel_draw.text((panel_w // 2, 12), meta["weekday"], font=weekday_font, fill=(245, 245, 245, 255), anchor="ma")
+    panel_draw.text((panel_w // 2, 38), meta["period"], font=period_font, fill=(245, 245, 245, 255), anchor="ma")
 
     # Main time and icon layout
-    time_box = (24, 90, int(panel_w * 0.70), panel_h - 76)
-    draw_seven_segment_text(panel, meta["time_12h"], time_box, (245, 245, 245, 255))
+    time_box = (18, 58, int(panel_w * 0.68), panel_h - 58)
+    draw_seven_segment_text(panel, meta["time_24h"], time_box, (245, 245, 245, 255))
 
-    icon_box = (int(panel_w * 0.72), 90, panel_w - 18, 170)
+    icon_box = (int(panel_w * 0.72), 52, panel_w - 12, 100)
     draw_weather_icon(panel_draw, icon_box, meta["period"])
-    panel_draw.text((panel_w - 20, 180), meta["temp"], font=bottom_font, fill=(245, 245, 245, 255), anchor="ra")
-    panel_draw.text((panel_w - 20, 204), meta["ampm"], font=bottom_font, fill=(245, 245, 245, 255), anchor="ra")
+    if meta["temp"]:
+        panel_draw.text((panel_w - 14, 104), meta["temp"], font=bottom_font, fill=(245, 245, 245, 255), anchor="ra")
 
     # Bottom strip
-    strip_y = panel_h - 70
+    strip_y = panel_h - 52
     panel_draw.line([18, strip_y, panel_w - 18, strip_y], fill=(45, 140, 255, 180), width=2)
     panel_draw.line([panel_w * 0.28, strip_y + 10, panel_w * 0.28, panel_h - 16], fill=(45, 140, 255, 150), width=2)
     panel_draw.line([panel_w * 0.72, strip_y + 10, panel_w * 0.72, panel_h - 16], fill=(45, 140, 255, 150), width=2)
@@ -632,12 +629,12 @@ def overlay_timestamp(
     left_center = int(panel_w * 0.14)
     mid_center = int(panel_w * 0.50)
     right_center = int(panel_w * 0.86)
-    panel_draw.text((left_center, panel_h - 52), meta["day"], font=day_font, fill=(245, 245, 245, 255), anchor="ma")
-    panel_draw.text((left_center, panel_h - 24), "DAY", font=label_font, fill=(60, 150, 255, 255), anchor="ma")
-    panel_draw.text((mid_center, panel_h - 52), meta["month"], font=month_font, fill=(245, 245, 245, 255), anchor="ma")
-    panel_draw.text((mid_center, panel_h - 24), "MONTH", font=label_font, fill=(60, 150, 255, 255), anchor="ma")
-    panel_draw.text((right_center, panel_h - 52), meta["year"], font=year_font, fill=(245, 245, 245, 255), anchor="ma")
-    panel_draw.text((right_center, panel_h - 24), "YEAR", font=label_font, fill=(60, 150, 255, 255), anchor="ma")
+    panel_draw.text((left_center, panel_h - 34), meta["day"], font=day_font, fill=(245, 245, 245, 255), anchor="mm")
+    panel_draw.text((left_center, panel_h - 14), "DAY", font=label_font, fill=(60, 150, 255, 255), anchor="mm")
+    panel_draw.text((mid_center, panel_h - 34), meta["month"], font=month_font, fill=(245, 245, 245, 255), anchor="mm")
+    panel_draw.text((mid_center, panel_h - 14), "MONTH", font=label_font, fill=(60, 150, 255, 255), anchor="mm")
+    panel_draw.text((right_center, panel_h - 34), meta["year"], font=year_font, fill=(245, 245, 245, 255), anchor="mm")
+    panel_draw.text((right_center, panel_h - 14), "YEAR", font=label_font, fill=(60, 150, 255, 255), anchor="mm")
 
     # Composite panel onto the frame.
     panel = panel.filter(ImageFilter.GaussianBlur(radius=0.4))
