@@ -11,6 +11,7 @@ This project cleans a timelapse AVI by:
 - detecting people, cars, and animals with YOLOv8
 - either discarding frames with detections or inpainting the detected boxes
 - OCRing the burned-in date, time, and temperature from the source frame while excluding the right-side logo
+- rendering the extracted data in a digital-panel style overlay inspired by a seven-segment clock display
 - showing live progress while the render runs
 
 ## Run

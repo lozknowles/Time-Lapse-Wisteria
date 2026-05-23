@@ -5,6 +5,7 @@
 - Added OCR-based extraction of the burned-in date, time, and temperature.
 - Cropped the OCR region to exclude the right-side logo area.
 - Added configurable OCR crop fractions for the timestamp strip.
+- Switched the timestamp overlay to a digital-panel style with seven-segment time digits.
 
 ## 0.1.0
 

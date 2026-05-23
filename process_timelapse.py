@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import os
 import re
 import sys
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 TORCH_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "torch"
 os.environ.setdefault("TORCH_HOME", str(TORCH_CACHE_DIR))
@@ -40,6 +41,10 @@ DEFAULT_TIMESTAMP_MARGIN = 16
 DEFAULT_TIMESTAMP_BOX_ALPHA = 170
 DEFAULT_TIMESTAMP_OCR_TOP_FRAC = 0.88
 DEFAULT_TIMESTAMP_OCR_LEFT_FRAC = 0.75
+DEFAULT_TIMESTAMP_PANEL_PADDING_X = 24
+DEFAULT_TIMESTAMP_PANEL_PADDING_Y = 20
+DEFAULT_TIMESTAMP_PANEL_WIDTH_FRAC = 0.42
+DEFAULT_TIMESTAMP_PANEL_HEIGHT_FRAC = 0.26
 
 COCO_PERSON = [0]
 COCO_VEHICLES = [1, 2, 3, 5, 7]
@@ -49,6 +54,19 @@ DATE_RE = re.compile(r"\d{4}/\d{2}/\d{2}")
 TIME_RE = re.compile(r"\d{2}:\d{2}:\d{2}")
 TEMP_RE = re.compile(r"\d+(?:\s+\d+)*\s*[CF]")
 TEMP_VALUE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:°\s*)?([CF])", re.IGNORECASE)
+
+SEGMENT_MAP = {
+    "0": "ab cdef".replace(" ", ""),
+    "1": "bc",
+    "2": "abged",
+    "3": "abgcd",
+    "4": "fgbc",
+    "5": "afgcd",
+    "6": "afgecd",
+    "7": "abc",
+    "8": "abcdefg",
+    "9": "abfgcd",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -341,6 +359,201 @@ def find_monospace_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.Im
     return ImageFont.load_default()
 
 
+def find_ui_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = [
+        r"C:\Windows\Fonts\arialbd.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\segoeuib.ttf",
+        r"C:\Windows\Fonts\seguiemj.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, font_size)
+    return ImageFont.load_default()
+
+
+def parse_timestamp_fields(
+    date_text: str | None,
+    time_text: str | None,
+    temp_text: str | None,
+) -> dict[str, str] | None:
+    if date_text is None or time_text is None:
+        return None
+
+    try:
+        dt = datetime.strptime(f"{date_text} {time_text}", "%Y/%m/%d %H:%M:%S")
+    except ValueError:
+        return None
+
+    hour = dt.hour
+    if 5 <= hour < 12:
+        period = "MORNING"
+    elif 12 <= hour < 17:
+        period = "AFTERNOON"
+    elif 17 <= hour < 21:
+        period = "EVENING"
+    else:
+        period = "NIGHT"
+
+    ampm = "A.M." if hour < 12 else "P.M."
+    hour_12 = hour % 12 or 12
+    time_12h = f"{hour_12}:{dt.strftime('%M')}"
+
+    temp_label = temp_text or ""
+    if temp_label:
+        match = TEMP_VALUE_RE.search(temp_label)
+        if match:
+            temp_label = f"{match.group(1)}{match.group(2).upper()}"
+        else:
+            temp_label = temp_label.replace(" ", "").replace("°", "")
+
+    return {
+        "weekday": dt.strftime("%A").upper(),
+        "period": period,
+        "time_12h": time_12h,
+        "ampm": ampm,
+        "day": dt.strftime("%d").lstrip("0") or "0",
+        "month": dt.strftime("%B").upper(),
+        "year": dt.strftime("%Y"),
+        "temp": temp_label,
+    }
+
+
+def draw_seven_segment_char(
+    image: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    char: str,
+    box: tuple[int, int, int, int],
+    fill: tuple[int, int, int, int],
+) -> None:
+    x0, y0, x1, y1 = box
+    w = max(1, x1 - x0)
+    h = max(1, y1 - y0)
+    thickness = max(4, int(min(w, h) * 0.14))
+    gap = max(2, thickness // 4)
+    top_h = max(1, (h - thickness * 3 - gap * 2) // 2)
+    mid_y = y0 + top_h + thickness + gap
+    bottom_y = y0 + top_h * 2 + thickness * 2 + gap * 2
+
+    def rect(a: int, b: int, c: int, d: int) -> None:
+        draw.rounded_rectangle([a, b, c, d], radius=max(2, thickness // 2), fill=fill)
+
+    active = set(SEGMENT_MAP.get(char, ""))
+    if char == ":":
+        cx = x0 + w // 2
+        dot = max(4, thickness // 2)
+        cy1 = y0 + h // 3
+        cy2 = y0 + (h * 2) // 3
+        rect(cx - dot // 2, cy1 - dot // 2, cx + dot // 2, cy1 + dot // 2)
+        rect(cx - dot // 2, cy2 - dot // 2, cx + dot // 2, cy2 + dot // 2)
+        return
+
+    if char not in SEGMENT_MAP:
+        return
+
+    # Horizontal segments
+    if "a" in active:
+        rect(x0 + thickness, y0, x1 - thickness, y0 + thickness)
+    if "g" in active:
+        rect(x0 + thickness, mid_y, x1 - thickness, mid_y + thickness)
+    if "d" in active:
+        rect(x0 + thickness, bottom_y, x1 - thickness, bottom_y + thickness)
+
+    # Vertical segments
+    left_top_y1 = y0 + thickness
+    left_top_y2 = y0 + thickness + top_h
+    right_top_y1 = y0 + thickness
+    right_top_y2 = y0 + thickness + top_h
+    left_bottom_y1 = mid_y + thickness
+    left_bottom_y2 = mid_y + thickness + top_h
+    right_bottom_y1 = mid_y + thickness
+    right_bottom_y2 = mid_y + thickness + top_h
+
+    if "f" in active:
+        rect(x0, left_top_y1, x0 + thickness, left_top_y2)
+    if "b" in active:
+        rect(x1 - thickness, right_top_y1, x1, right_top_y2)
+    if "e" in active:
+        rect(x0, left_bottom_y1, x0 + thickness, left_bottom_y2)
+    if "c" in active:
+        rect(x1 - thickness, right_bottom_y1, x1, right_bottom_y2)
+
+
+def draw_seven_segment_text(
+    panel: Image.Image,
+    text: str,
+    box: tuple[int, int, int, int],
+    fill: tuple[int, int, int, int],
+) -> None:
+    draw = ImageDraw.Draw(panel)
+    x0, y0, x1, y1 = box
+    chars = list(text)
+    if not chars:
+        return
+
+    count = len(chars)
+    gap = max(6, (x1 - x0) // max(14, count * 5))
+    total_gap = gap * (count - 1)
+    char_w = max(12, ((x1 - x0) - total_gap) // count)
+    char_h = max(12, y1 - y0)
+
+    # Light glow
+    glow_layer = Image.new("RGBA", panel.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow_layer)
+    for idx, char in enumerate(chars):
+        cx0 = x0 + idx * (char_w + gap)
+        cx1 = cx0 + char_w
+        draw_seven_segment_char(panel, glow_draw, char, (cx0, y0, cx1, y0 + char_h), (24, 160, 255, 110))
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=2))
+    panel.alpha_composite(glow_layer)
+
+    # Crisp foreground
+    draw = ImageDraw.Draw(panel)
+    for idx, char in enumerate(chars):
+        cx0 = x0 + idx * (char_w + gap)
+        cx1 = cx0 + char_w
+        draw_seven_segment_char(panel, draw, char, (cx0, y0, cx1, y0 + char_h), fill)
+
+
+def draw_weather_icon(
+    draw: ImageDraw.ImageDraw,
+    box: tuple[int, int, int, int],
+    daypart: str,
+) -> None:
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    h = y1 - y0
+    cx = x0 + w // 2
+    cy = y0 + h // 2
+    sun_color = (255, 200, 55, 255)
+    cloud_color = (35, 115, 220, 255)
+    white = (245, 245, 245, 255)
+
+    if daypart in {"MORNING", "AFTERNOON"}:
+        r = max(10, min(w, h) // 4)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=sun_color)
+        for angle in range(0, 360, 30):
+            rad = np.deg2rad(angle)
+            inner = r + 4
+            outer = r + 18
+            x_start = cx + int(np.cos(rad) * inner)
+            y_start = cy + int(np.sin(rad) * inner)
+            x_end = cx + int(np.cos(rad) * outer)
+            y_end = cy + int(np.sin(rad) * outer)
+            draw.line([x_start, y_start, x_end, y_end], fill=sun_color, width=4)
+        cloud = [
+            (cx - r - 8, cy + 4, cx + r + 8, cy + 28),
+            (cx - r + 5, cy - 8, cx + r - 2, cy + 16),
+        ]
+        draw.rounded_rectangle(cloud[0], radius=12, fill=cloud_color)
+        draw.rounded_rectangle(cloud[1], radius=10, fill=cloud_color)
+    else:
+        r = max(10, min(w, h) // 4)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=white)
+        draw.ellipse([cx - r + 8, cy - r + 2, cx + r + 8, cy + r + 2], fill=(0, 0, 0, 0))
+        draw.rounded_rectangle([cx - r, cy + 2, cx + r + 12, cy + 24], radius=12, fill=cloud_color)
+
+
 def overlay_timestamp(
     frame: np.ndarray,
     date_text: str,
@@ -350,41 +563,85 @@ def overlay_timestamp(
     margin: int,
     box_alpha: int,
 ) -> np.ndarray:
+    meta = parse_timestamp_fields(date_text, time_text, temp_text)
+    if meta is None:
+        return frame
+
     image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).convert("RGBA")
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font = find_monospace_font(font_size)
 
-    lines = [date_text, time_text]
-    if temp_text:
-        lines.append(temp_text)
-    line_boxes = [draw.textbbox((0, 0), line, font=font) for line in lines]
-    widths = [box[2] - box[0] for box in line_boxes]
-    heights = [box[3] - box[1] for box in line_boxes]
-    line_gap = max(4, font_size // 5)
-    pad_x = max(10, font_size // 2)
-    pad_y = max(6, font_size // 3)
-
-    box_w = max(widths) + pad_x * 2
-    box_h = sum(heights) + line_gap + pad_y * 2
+    panel_w = min(int(image.size[0] * DEFAULT_TIMESTAMP_PANEL_WIDTH_FRAC), image.size[0] - margin * 2)
+    panel_h = min(int(image.size[1] * DEFAULT_TIMESTAMP_PANEL_HEIGHT_FRAC), image.size[1] - margin * 2)
+    panel_w = max(520, panel_w)
+    panel_h = max(210, panel_h)
     x0 = margin
-    y0 = image.size[1] - margin - box_h
+    y0 = image.size[1] - margin - panel_h
+    x1 = x0 + panel_w
+    y1 = y0 + panel_h
 
-    draw.rounded_rectangle(
-        [x0, y0, x0 + box_w, y0 + box_h],
-        radius=max(6, font_size // 4),
-        fill=(0, 0, 0, max(0, min(255, box_alpha))),
+    panel = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
+    panel_draw = ImageDraw.Draw(panel)
+
+    # Backdrop
+    panel_draw.rounded_rectangle(
+        [0, 0, panel_w - 1, panel_h - 1],
+        radius=max(16, font_size // 2),
+        fill=(8, 14, 24, max(0, min(255, box_alpha))),
+        outline=(35, 110, 200, 180),
+        width=3,
     )
 
-    text_y = y0 + pad_y
-    for idx, line in enumerate(lines):
-        draw.text(
-            (x0 + pad_x, text_y),
-            line,
-            font=font,
-            fill=(255, 255, 255, 255),
-        )
-        text_y += heights[idx] + line_gap
+    inner = [8, 8, panel_w - 8, panel_h - 8]
+    panel_draw.rounded_rectangle(
+        inner,
+        radius=max(12, font_size // 3),
+        outline=(20, 80, 145, 120),
+        width=1,
+    )
+
+    # Labels
+    weekday_font = find_ui_font(max(18, font_size + 4))
+    period_font = find_ui_font(max(14, font_size - 2))
+    bottom_font = find_ui_font(max(16, font_size - 4))
+    small_font = find_ui_font(max(14, font_size - 6))
+
+    panel_draw.text((panel_w // 2, 18), meta["weekday"], font=weekday_font, fill=(245, 245, 245, 255), anchor="ma")
+    panel_draw.text((panel_w // 2, 56), meta["period"], font=period_font, fill=(245, 245, 245, 255), anchor="ma")
+
+    # Main time and icon layout
+    time_box = (24, 90, int(panel_w * 0.70), panel_h - 76)
+    draw_seven_segment_text(panel, meta["time_12h"], time_box, (245, 245, 245, 255))
+
+    icon_box = (int(panel_w * 0.72), 90, panel_w - 18, 170)
+    draw_weather_icon(panel_draw, icon_box, meta["period"])
+    panel_draw.text((panel_w - 20, 180), meta["temp"], font=bottom_font, fill=(245, 245, 245, 255), anchor="ra")
+    panel_draw.text((panel_w - 20, 204), meta["ampm"], font=bottom_font, fill=(245, 245, 245, 255), anchor="ra")
+
+    # Bottom strip
+    strip_y = panel_h - 70
+    panel_draw.line([18, strip_y, panel_w - 18, strip_y], fill=(45, 140, 255, 180), width=2)
+    panel_draw.line([panel_w * 0.28, strip_y + 10, panel_w * 0.28, panel_h - 16], fill=(45, 140, 255, 150), width=2)
+    panel_draw.line([panel_w * 0.72, strip_y + 10, panel_w * 0.72, panel_h - 16], fill=(45, 140, 255, 150), width=2)
+
+    day_font = find_ui_font(max(20, font_size + 2))
+    month_font = find_ui_font(max(20, font_size + 4))
+    year_font = find_ui_font(max(20, font_size + 4))
+    label_font = find_ui_font(max(12, font_size - 8))
+
+    left_center = int(panel_w * 0.14)
+    mid_center = int(panel_w * 0.50)
+    right_center = int(panel_w * 0.86)
+    panel_draw.text((left_center, panel_h - 52), meta["day"], font=day_font, fill=(245, 245, 245, 255), anchor="ma")
+    panel_draw.text((left_center, panel_h - 24), "DAY", font=label_font, fill=(60, 150, 255, 255), anchor="ma")
+    panel_draw.text((mid_center, panel_h - 52), meta["month"], font=month_font, fill=(245, 245, 245, 255), anchor="ma")
+    panel_draw.text((mid_center, panel_h - 24), "MONTH", font=label_font, fill=(60, 150, 255, 255), anchor="ma")
+    panel_draw.text((right_center, panel_h - 52), meta["year"], font=year_font, fill=(245, 245, 245, 255), anchor="ma")
+    panel_draw.text((right_center, panel_h - 24), "YEAR", font=label_font, fill=(60, 150, 255, 255), anchor="ma")
+
+    # Composite panel onto the frame.
+    panel = panel.filter(ImageFilter.GaussianBlur(radius=0.4))
+    overlay.alpha_composite(panel, dest=(x0, y0))
 
     combined = Image.alpha_composite(image, overlay).convert("RGB")
     return cv2.cvtColor(np.array(combined), cv2.COLOR_RGB2BGR)
