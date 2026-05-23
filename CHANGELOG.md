@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Added OCR-based extraction of the burned-in date, time, and temperature.
+- Cropped the OCR region to exclude the right-side logo area.
+- Added configurable OCR crop fractions for the timestamp strip.
+
 ## 0.1.0
 
 - Added the timelapse processing script.

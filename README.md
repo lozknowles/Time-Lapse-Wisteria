@@ -10,6 +10,7 @@ This project cleans a timelapse AVI by:
 - trimming an extra 50 pixels from the bottom of the final frame
 - detecting people, cars, and animals with YOLOv8
 - either discarding frames with detections or inpainting the detected boxes
+- OCRing the burned-in date, time, and temperature from the source frame while excluding the right-side logo
 - showing live progress while the render runs
 
 ## Run
@@ -40,6 +41,12 @@ python process_timelapse.py --input DSCF0001.AVI --output DSCF0001_cleaned.avi -
 - `--mask-padding`: padding around detected boxes before masking or discarding
 - `--inpaint-radius`: radius used for inpainting detected regions
 - `--yolo-model`: YOLO weights file, default `yolov8n.pt`
+- `--overlay-timestamp` / `--no-overlay-timestamp`: enable or disable OCR timestamp overlay
+- `--timestamp-ocr-top-frac`: top fraction of the source frame used for OCR
+- `--timestamp-ocr-left-frac`: left fraction of the source frame used for OCR so the logo area is excluded
+- `--timestamp-font-size`: font size used for the timestamp overlay
+- `--timestamp-margin`: margin for the timestamp overlay from the bottom-left corner
+- `--timestamp-box-alpha`: background opacity for the timestamp overlay box
 
 ## Notes
 

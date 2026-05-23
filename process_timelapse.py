@@ -1,11 +1,13 @@
 import argparse
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 TORCH_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "torch"
 os.environ.setdefault("TORCH_HOME", str(TORCH_CACHE_DIR))
@@ -14,6 +16,11 @@ try:
     from ultralytics import YOLO
 except ImportError:  # pragma: no cover - handled at runtime
     YOLO = None
+
+try:
+    from easyocr import Reader as EasyOCRReader
+except ImportError:  # pragma: no cover - handled at runtime
+    EasyOCRReader = None
 
 
 DEFAULT_ROTATION_DEG = 4.0
@@ -27,10 +34,21 @@ DEFAULT_OBJECT_CONFIDENCE = 0.35
 DEFAULT_INPAINT_RADIUS = 3
 DEFAULT_MASK_PADDING = 18
 DEFAULT_YOLO_MODEL = "yolov8n.pt"
+DEFAULT_OVERLAY_TIMESTAMP = True
+DEFAULT_TIMESTAMP_FONT_SIZE = 28
+DEFAULT_TIMESTAMP_MARGIN = 16
+DEFAULT_TIMESTAMP_BOX_ALPHA = 170
+DEFAULT_TIMESTAMP_OCR_TOP_FRAC = 0.88
+DEFAULT_TIMESTAMP_OCR_LEFT_FRAC = 0.75
 
 COCO_PERSON = [0]
 COCO_VEHICLES = [1, 2, 3, 5, 7]
 COCO_ANIMALS = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+
+DATE_RE = re.compile(r"\d{4}/\d{2}/\d{2}")
+TIME_RE = re.compile(r"\d{2}:\d{2}:\d{2}")
+TEMP_RE = re.compile(r"\d+(?:\s+\d+)*\s*[CF]")
+TEMP_VALUE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:°\s*)?([CF])", re.IGNORECASE)
 
 
 def parse_args() -> argparse.Namespace:
@@ -135,6 +153,42 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_YOLO_MODEL,
         help="YOLO model weights to load, for example yolov8n.pt.",
     )
+    parser.add_argument(
+        "--overlay-timestamp",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_OVERLAY_TIMESTAMP,
+        help="Overlay the source date/time at the bottom-left of each kept frame.",
+    )
+    parser.add_argument(
+        "--timestamp-font-size",
+        type=int,
+        default=DEFAULT_TIMESTAMP_FONT_SIZE,
+        help="Font size for the timestamp overlay.",
+    )
+    parser.add_argument(
+        "--timestamp-margin",
+        type=int,
+        default=DEFAULT_TIMESTAMP_MARGIN,
+        help="Margin in pixels for the timestamp overlay from the bottom-left corner.",
+    )
+    parser.add_argument(
+        "--timestamp-box-alpha",
+        type=int,
+        default=DEFAULT_TIMESTAMP_BOX_ALPHA,
+        help="Opacity of the timestamp box background, 0-255.",
+    )
+    parser.add_argument(
+        "--timestamp-ocr-top-frac",
+        type=float,
+        default=DEFAULT_TIMESTAMP_OCR_TOP_FRAC,
+        help="Top fraction of the frame used for OCR of the timestamp strip.",
+    )
+    parser.add_argument(
+        "--timestamp-ocr-left-frac",
+        type=float,
+        default=DEFAULT_TIMESTAMP_OCR_LEFT_FRAC,
+        help="Left fraction of the frame used for OCR so the right-side logo is excluded.",
+    )
     return parser.parse_args()
 
 
@@ -222,6 +276,120 @@ def detect_boxes(
     return boxes
 
 
+def load_timestamp_reader() -> "EasyOCRReader | None":
+    if EasyOCRReader is None:
+        return None
+    return EasyOCRReader(["en"], gpu=False, verbose=False)
+
+
+def extract_timestamp_parts(
+    reader: "EasyOCRReader",
+    frame: np.ndarray,
+    top_frac: float,
+    left_frac: float,
+) -> tuple[str | None, str | None, str | None]:
+    h, w = frame.shape[:2]
+    y1 = min(max(0, int(h * top_frac)), h - 1)
+    x2 = min(max(1, int(w * left_frac)), w)
+    roi = frame[y1:h, 0:x2]
+    fragments = reader.readtext(
+        roi,
+        detail=0,
+        paragraph=False,
+        allowlist="0123456789/:.CFcf° ",
+    )
+
+    date_text = None
+    time_text = None
+    temp_text = None
+    for fragment in fragments:
+        cleaned = re.sub(r"\s+", "", fragment)
+        if date_text is None:
+            match = DATE_RE.search(cleaned)
+            if match:
+                date_text = match.group(0)
+        if time_text is None:
+            match = TIME_RE.search(cleaned)
+            if match:
+                time_text = match.group(0)
+        if temp_text is None:
+            normalized = re.sub(r"\s+", " ", fragment).strip()
+            match = TEMP_VALUE_RE.search(normalized)
+            if match:
+                temp_text = f"{match.group(1)}°{match.group(2).upper()}"
+    if temp_text is None and fragments:
+        # Fall back to the most likely temperature fragment when OCR sees the line but not the unit.
+        for fragment in fragments:
+            normalized = re.sub(r"\s+", " ", fragment).strip()
+            match = TEMP_VALUE_RE.search(normalized)
+            if match:
+                temp_text = f"{match.group(1)}°{match.group(2).upper()}"
+                break
+    return date_text, time_text, temp_text
+
+
+def find_monospace_font(font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = [
+        r"C:\Windows\Fonts\consola.ttf",
+        r"C:\Windows\Fonts\consolab.ttf",
+        r"C:\Windows\Fonts\cour.ttf",
+        r"C:\Windows\Fonts\courbd.ttf",
+    ]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return ImageFont.truetype(candidate, font_size)
+    return ImageFont.load_default()
+
+
+def overlay_timestamp(
+    frame: np.ndarray,
+    date_text: str,
+    time_text: str,
+    temp_text: str | None,
+    font_size: int,
+    margin: int,
+    box_alpha: int,
+) -> np.ndarray:
+    image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).convert("RGBA")
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font = find_monospace_font(font_size)
+
+    lines = [date_text, time_text]
+    if temp_text:
+        lines.append(temp_text)
+    line_boxes = [draw.textbbox((0, 0), line, font=font) for line in lines]
+    widths = [box[2] - box[0] for box in line_boxes]
+    heights = [box[3] - box[1] for box in line_boxes]
+    line_gap = max(4, font_size // 5)
+    pad_x = max(10, font_size // 2)
+    pad_y = max(6, font_size // 3)
+
+    box_w = max(widths) + pad_x * 2
+    box_h = sum(heights) + line_gap + pad_y * 2
+    x0 = margin
+    y0 = image.size[1] - margin - box_h
+
+    draw.rounded_rectangle(
+        [x0, y0, x0 + box_w, y0 + box_h],
+        radius=max(6, font_size // 4),
+        fill=(0, 0, 0, max(0, min(255, box_alpha))),
+    )
+
+    text_y = y0 + pad_y
+    for idx, line in enumerate(lines):
+        draw.text(
+            (x0 + pad_x, text_y),
+            line,
+            font=font,
+            fill=(255, 255, 255, 255),
+        )
+        text_y += heights[idx] + line_gap
+
+    combined = Image.alpha_composite(image, overlay).convert("RGB")
+    return cv2.cvtColor(np.array(combined), cv2.COLOR_RGB2BGR)
+
+
 def prompt_for_input_path() -> Path:
     try:
         from tkinter import Tk, filedialog
@@ -274,6 +442,12 @@ def main() -> None:
             raise SystemExit("ultralytics is not installed. Install it to use object detection.")
         yolo_model = YOLO(args.yolo_model)
 
+    timestamp_reader = None
+    if args.overlay_timestamp:
+        timestamp_reader = load_timestamp_reader()
+        if timestamp_reader is None:
+            raise SystemExit("easyocr is not installed. Install it to overlay timestamps.")
+
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
         raise SystemExit(f"Could not open input video: {input_path}")
@@ -290,6 +464,9 @@ def main() -> None:
     frame_count = 0
     kept_count = 0
     filtered_count = 0
+    last_date_text = None
+    last_time_text = None
+    last_temp_text = None
     start_time = time.time()
     last_reported = -1
 
@@ -364,6 +541,30 @@ def main() -> None:
                     )
                     cleaned = cv2.inpaint(cleaned, mask, args.inpaint_radius, cv2.INPAINT_TELEA)
                     filtered_count += 1
+
+            if args.overlay_timestamp and timestamp_reader is not None:
+                date_text, time_text, temp_text = extract_timestamp_parts(
+                    timestamp_reader,
+                    frame,
+                    args.timestamp_ocr_top_frac,
+                    args.timestamp_ocr_left_frac,
+                )
+                if date_text is not None:
+                    last_date_text = date_text
+                if time_text is not None:
+                    last_time_text = time_text
+                if temp_text is not None:
+                    last_temp_text = temp_text
+                if last_date_text is not None and last_time_text is not None:
+                    cleaned = overlay_timestamp(
+                        cleaned,
+                        last_date_text,
+                        last_time_text,
+                        last_temp_text,
+                        args.timestamp_font_size,
+                        args.timestamp_margin,
+                        args.timestamp_box_alpha,
+                    )
 
             if writer is None:
                 height, width = cleaned.shape[:2]
