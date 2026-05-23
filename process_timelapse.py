@@ -1,10 +1,19 @@
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+TORCH_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "torch"
+os.environ.setdefault("TORCH_HOME", str(TORCH_CACHE_DIR))
+
+try:
+    from ultralytics import YOLO
+except ImportError:  # pragma: no cover - handled at runtime
+    YOLO = None
 
 
 DEFAULT_ROTATION_DEG = 4.0
@@ -13,6 +22,15 @@ DEFAULT_TIMESTAMP_CROP_PX = 72
 DEFAULT_BOTTOM_CROP_PX = 50
 DEFAULT_DAY_THRESHOLD = 70.0
 DEFAULT_START_SECONDS = 1.0
+DEFAULT_OBJECT_ACTION = "discard"
+DEFAULT_OBJECT_CONFIDENCE = 0.35
+DEFAULT_INPAINT_RADIUS = 3
+DEFAULT_MASK_PADDING = 18
+DEFAULT_YOLO_MODEL = "yolov8n.pt"
+
+COCO_PERSON = [0]
+COCO_VEHICLES = [1, 2, 3, 5, 7]
+COCO_ANIMALS = [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +88,53 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_START_SECONDS,
         help="Skip the first N seconds of the source video before processing.",
     )
+    parser.add_argument(
+        "--detect-people",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable or disable person detection.",
+    )
+    parser.add_argument(
+        "--detect-cars",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable or disable vehicle detection.",
+    )
+    parser.add_argument(
+        "--detect-animals",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable or disable common animal detection.",
+    )
+    parser.add_argument(
+        "--object-action",
+        choices=("discard", "inpaint"),
+        default=DEFAULT_OBJECT_ACTION,
+        help="What to do when a person/car/animal is detected.",
+    )
+    parser.add_argument(
+        "--object-confidence",
+        type=float,
+        default=DEFAULT_OBJECT_CONFIDENCE,
+        help="Minimum YOLO confidence for detected objects.",
+    )
+    parser.add_argument(
+        "--mask-padding",
+        type=int,
+        default=DEFAULT_MASK_PADDING,
+        help="Extra pixels to expand detected boxes before masking or discarding.",
+    )
+    parser.add_argument(
+        "--inpaint-radius",
+        type=int,
+        default=DEFAULT_INPAINT_RADIUS,
+        help="Inpaint radius used when object-action is inpaint.",
+    )
+    parser.add_argument(
+        "--yolo-model",
+        default=DEFAULT_YOLO_MODEL,
+        help="YOLO model weights to load, for example yolov8n.pt.",
+    )
     return parser.parse_args()
 
 
@@ -107,6 +172,54 @@ def crop_frame(
         cropped = cropped[:-bottom_crop_px, :]
 
     return cropped
+
+
+def build_target_classes(args: argparse.Namespace) -> list[int]:
+    classes: set[int] = set()
+    if args.detect_people:
+        classes.update(COCO_PERSON)
+    if args.detect_cars:
+        classes.update(COCO_VEHICLES)
+    if args.detect_animals:
+        classes.update(COCO_ANIMALS)
+    return sorted(classes)
+
+
+def expand_boxes(boxes: list[tuple[int, int, int, int]], width: int, height: int, padding: int) -> np.ndarray:
+    mask = np.zeros((height, width), dtype=np.uint8)
+    for x1, y1, x2, y2 in boxes:
+        x1 = max(0, x1 - padding)
+        y1 = max(0, y1 - padding)
+        x2 = min(width, x2 + padding)
+        y2 = min(height, y2 + padding)
+        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+    return mask
+
+
+def detect_boxes(
+    model: "YOLO",
+    frame: np.ndarray,
+    class_ids: list[int],
+    confidence: float,
+) -> list[tuple[int, int, int, int]]:
+    predict_kwargs = {
+        "imgsz": 640,
+        "conf": confidence,
+        "device": "cpu",
+        "verbose": False,
+    }
+    if class_ids:
+        predict_kwargs["classes"] = class_ids
+
+    result = model.predict(frame, **predict_kwargs)[0]
+    if result.boxes is None:
+        return []
+
+    boxes: list[tuple[int, int, int, int]] = []
+    for xyxy in result.boxes.xyxy.cpu().numpy().astype(int):
+        x1, y1, x2, y2 = map(int, xyxy.tolist())
+        boxes.append((x1, y1, x2, y2))
+    return boxes
 
 
 def prompt_for_input_path() -> Path:
@@ -154,6 +267,13 @@ def main() -> None:
     else:
         output_path = input_path.with_name(f"{input_path.stem}_cleaned{input_path.suffix}")
 
+    target_classes = build_target_classes(args)
+    yolo_model = None
+    if target_classes:
+        if YOLO is None:
+            raise SystemExit("ultralytics is not installed. Install it to use object detection.")
+        yolo_model = YOLO(args.yolo_model)
+
     cap = cv2.VideoCapture(str(input_path))
     if not cap.isOpened():
         raise SystemExit(f"Could not open input video: {input_path}")
@@ -169,6 +289,7 @@ def main() -> None:
     writer = None
     frame_count = 0
     kept_count = 0
+    filtered_count = 0
     start_time = time.time()
     last_reported = -1
 
@@ -183,14 +304,14 @@ def main() -> None:
             rate = frame_count / elapsed if elapsed > 0 else 0.0
             message = (
                 f"\rProcessing {frame_count}/{total_frames} frames "
-                f"({percent}%) | kept {kept_count} | {rate:.1f} fps"
+                f"({percent}%) | kept {kept_count} | filtered {filtered_count} | {rate:.1f} fps"
             )
         else:
             elapsed = time.time() - start_time
             rate = frame_count / elapsed if elapsed > 0 else 0.0
             message = (
                 f"\rProcessing {frame_count} frames "
-                f"| kept {kept_count} | {rate:.1f} fps"
+                f"| kept {kept_count} | filtered {filtered_count} | {rate:.1f} fps"
             )
         print(message, end="", file=sys.stdout, flush=True)
 
@@ -220,6 +341,29 @@ def main() -> None:
                     frame_count += 1
                     report()
                     continue
+
+            detected_boxes: list[tuple[int, int, int, int]] = []
+            if yolo_model is not None and target_classes:
+                detected_boxes = detect_boxes(
+                    yolo_model,
+                    cleaned,
+                    target_classes,
+                    args.object_confidence,
+                )
+                if detected_boxes and args.object_action == "discard":
+                    filtered_count += 1
+                    frame_count += 1
+                    report()
+                    continue
+                if detected_boxes and args.object_action == "inpaint":
+                    mask = expand_boxes(
+                        detected_boxes,
+                        cleaned.shape[1],
+                        cleaned.shape[0],
+                        args.mask_padding,
+                    )
+                    cleaned = cv2.inpaint(cleaned, mask, args.inpaint_radius, cv2.INPAINT_TELEA)
+                    filtered_count += 1
 
             if writer is None:
                 height, width = cleaned.shape[:2]

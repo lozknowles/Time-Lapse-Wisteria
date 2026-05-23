@@ -16,3 +16,9 @@ compare_same_frame.png
 cleaned_from_1s_preview.png
 sample_*.png
 *preview.png
+*candidate*.png
+around_*.png
+left_*.png
+.cache/
+*.pt
+runs/

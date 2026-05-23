@@ -8,6 +8,8 @@ This project cleans a timelapse AVI by:
 - rotating and cropping each frame
 - removing the burned-in timestamp strip at the bottom
 - trimming an extra 50 pixels from the bottom of the final frame
+- detecting people, cars, and animals with YOLOv8
+- either discarding frames with detections or inpainting the detected boxes
 - showing live progress while the render runs
 
 ## Run
@@ -32,6 +34,12 @@ python process_timelapse.py --input DSCF0001.AVI --output DSCF0001_cleaned.avi -
 - `--bottom-crop-px`: extra bottom crop in pixels after timestamp removal
 - `--day-threshold`: brightness filter for daytime-only output
 - `--start-seconds`: number of seconds to skip before processing
+- `--detect-people`, `--detect-cars`, `--detect-animals`: enable object classes to filter
+- `--object-action`: `discard` or `inpaint`
+- `--object-confidence`: YOLO confidence threshold
+- `--mask-padding`: padding around detected boxes before masking or discarding
+- `--inpaint-radius`: radius used for inpainting detected regions
+- `--yolo-model`: YOLO weights file, default `yolov8n.pt`
 
 ## Notes
 
@@ -39,3 +47,4 @@ python process_timelapse.py --input DSCF0001.AVI --output DSCF0001_cleaned.avi -
 - If `--input` is omitted, a file picker will open when available.
 - If `--rotation-deg` is omitted, you will be prompted in the terminal.
 - Daytime filtering is enabled by default with a threshold of `70`.
+- The script stores YOLO cache data inside `.cache/torch` in the repo folder.

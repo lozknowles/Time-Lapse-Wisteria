@@ -13,9 +13,11 @@
 - Provide a rotation angle at the prompt, or pass `--rotation-deg`.
 - The script reports progress while it processes frames.
 - The cleaned output is written beside the input file unless `--output` is provided.
+- Optional YOLOv8 filtering can remove or inpaint frames with people, cars, or animals.
 
 ## Notes For Future Changes
 
 - Keep the timestamp crop behavior configurable.
 - Keep the skip-start behavior configurable.
+- Keep YOLO cache files out of version control.
 - If the render pipeline changes, update the README and changelog together.
