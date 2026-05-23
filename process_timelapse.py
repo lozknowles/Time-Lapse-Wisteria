@@ -604,7 +604,6 @@ def overlay_timestamp(
     small_font = find_ui_font(max(14, font_size - 6))
 
     panel_draw.text((panel_w // 2, 12), meta["weekday"], font=weekday_font, fill=(245, 245, 245, 255), anchor="ma")
-    panel_draw.text((panel_w // 2, 38), meta["period"], font=period_font, fill=(245, 245, 245, 255), anchor="ma")
 
     # Main time and icon layout
     time_box = (18, 58, int(panel_w * 0.68), panel_h - 58)
@@ -625,11 +624,15 @@ def overlay_timestamp(
     month_font = find_ui_font(max(20, font_size + 4))
     year_font = find_ui_font(max(20, font_size + 4))
     label_font = find_ui_font(max(12, font_size - 8))
+    period_font_bottom = find_ui_font(max(13, font_size - 7))
 
     left_center = int(panel_w * 0.14)
     mid_center = int(panel_w * 0.50)
     right_center = int(panel_w * 0.86)
-    panel_draw.text((left_center, panel_h - 34), meta["day"], font=day_font, fill=(245, 245, 245, 255), anchor="mm")
+    day_x = int(panel_w * 0.11)
+    day_y = panel_h - 34
+    panel_draw.text((day_x, day_y), meta["day"], font=day_font, fill=(245, 245, 245, 255), anchor="mm")
+    panel_draw.text((day_x + 46, day_y), meta["period"], font=period_font_bottom, fill=(60, 150, 255, 255), anchor="lm")
     panel_draw.text((left_center, panel_h - 14), "DAY", font=label_font, fill=(60, 150, 255, 255), anchor="mm")
     panel_draw.text((mid_center, panel_h - 34), meta["month"], font=month_font, fill=(245, 245, 245, 255), anchor="mm")
     panel_draw.text((mid_center, panel_h - 14), "MONTH", font=label_font, fill=(60, 150, 255, 255), anchor="mm")
