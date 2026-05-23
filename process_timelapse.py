@@ -10,7 +10,8 @@ import numpy as np
 DEFAULT_ROTATION_DEG = 4.0
 DEFAULT_CROP = (0.04, 0.06, 0.96, 0.94)
 DEFAULT_TIMESTAMP_CROP_PX = 72
-DEFAULT_DAY_THRESHOLD = None
+DEFAULT_BOTTOM_CROP_PX = 50
+DEFAULT_DAY_THRESHOLD = 70.0
 DEFAULT_START_SECONDS = 1.0
 
 
@@ -52,10 +53,16 @@ def parse_args() -> argparse.Namespace:
         help="Pixels to remove from the bottom after the center crop.",
     )
     parser.add_argument(
+        "--bottom-crop-px",
+        type=int,
+        default=DEFAULT_BOTTOM_CROP_PX,
+        help="Extra pixels to remove from the bottom after timestamp cropping.",
+    )
+    parser.add_argument(
         "--day-threshold",
         type=float,
         default=DEFAULT_DAY_THRESHOLD,
-        help="Optional brightness threshold for keeping only daytime frames.",
+        help="Brightness threshold for keeping only daytime frames.",
     )
     parser.add_argument(
         "--start-seconds",
@@ -79,7 +86,12 @@ def rotate_frame(frame: np.ndarray, rotation_deg: float) -> np.ndarray:
     )
 
 
-def crop_frame(frame: np.ndarray, crop: tuple[float, float, float, float], timestamp_crop_px: int) -> np.ndarray:
+def crop_frame(
+    frame: np.ndarray,
+    crop: tuple[float, float, float, float],
+    timestamp_crop_px: int,
+    bottom_crop_px: int,
+) -> np.ndarray:
     h, w = frame.shape[:2]
     left_p, top_p, right_p, bottom_p = crop
 
@@ -91,6 +103,8 @@ def crop_frame(frame: np.ndarray, crop: tuple[float, float, float, float], times
     cropped = frame[y1:y2, x1:x2]
     if timestamp_crop_px > 0:
         cropped = cropped[:-timestamp_crop_px, :]
+    if bottom_crop_px > 0:
+        cropped = cropped[:-bottom_crop_px, :]
 
     return cropped
 
@@ -187,7 +201,12 @@ def main() -> None:
                 break
 
             rotated = rotate_frame(frame, rotation_deg)
-            cleaned = crop_frame(rotated, tuple(args.crop), args.timestamp_crop_px)
+            cleaned = crop_frame(
+                rotated,
+                tuple(args.crop),
+                args.timestamp_crop_px,
+                args.bottom_crop_px,
+            )
 
             if cleaned.size == 0:
                 frame_count += 1
